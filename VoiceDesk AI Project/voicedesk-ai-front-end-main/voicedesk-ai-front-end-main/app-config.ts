@@ -1,0 +1,18 @@
+import type { AppConfig } from './lib/types';
+
+export const APP_CONFIG_DEFAULTS: AppConfig = {
+  companyName: 'VoiceDesk AI',
+  pageTitle: 'VoiceDesk AI',
+  pageDescription: 'A real-time voice and avatar support agent',
+
+  supportsChatInput: true,
+  supportsVideoInput: true,
+  supportsScreenShare: true,
+  isPreConnectBufferEnabled: true,
+
+  logo: '/lk-logo.svg',
+  accent: '#002cf2',
+  logoDark: '/lk-logo-dark.svg',
+  accentDark: '#1fd5f9',
+  startButtonText: 'Start call',
+};
