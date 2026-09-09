@@ -78,7 +78,7 @@ async def send_email(
         
         # Get credentials from environment variables
         gmail_user = os.getenv("GMAIL_USER")
-        gmail_password = os.getenv("GMAIL_APP_PASSWORD")  # Use App Password, not regular password
+        gmail_password = (os.getenv("GMAIL_APP_PASSWORD") or "").replace(" ", "")  # App Password; strip display spaces
         
         if not gmail_user or not gmail_password:
             logging.error("Gmail credentials not found in environment variables")

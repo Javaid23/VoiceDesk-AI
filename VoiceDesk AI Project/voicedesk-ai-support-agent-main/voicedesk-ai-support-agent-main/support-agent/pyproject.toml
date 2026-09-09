@@ -3,7 +3,7 @@ name = "support-agent"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-    "livekit-agents[assemblyai,bey,elevenlabs,groq,silero]~=1.2",
+    "livekit-agents[assemblyai,bey,deepgram,groq,silero]~=1.2",
     "livekit-plugins-noise-cancellation~=0.2",
     "python-dotenv>=1.2.1",
 ]

@@ -5,7 +5,7 @@ from livekit.agents import AgentSession, Agent, RoomInputOptions
 from livekit.plugins import (
     groq,
     assemblyai,
-    elevenlabs,
+    deepgram,
     silero,
     noise_cancellation,
     bey
@@ -49,10 +49,9 @@ async def entrypoint(ctx: agents.JobContext):
         stt=assemblyai.STT(
             keyterms_prompt=SUPPORT_KEYTERMS,
         ),
-        llm=groq.LLM(model="llama-3.3-70b-versatile"),
-        tts=elevenlabs.TTS(
-            voice_id=os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM"),
-            model="eleven_turbo_v2_5",
+        llm=groq.LLM(model="openai/gpt-oss-20b"),
+        tts=deepgram.TTS(
+            model=os.getenv("DEEPGRAM_TTS_MODEL", "aura-2-andromeda-en"),
         ),
         vad=silero.VAD.load(),
         turn_detection="stt",

@@ -728,8 +728,8 @@ codecs = [
     { name = "av" },
     { name = "numpy" },
 ]
-elevenlabs = [
-    { name = "livekit-plugins-elevenlabs" },
+deepgram = [
+    { name = "livekit-plugins-deepgram" },
 ]
 groq = [
     { name = "livekit-plugins-groq" },
@@ -802,15 +802,16 @@ wheels = [
 ]
 
 [[package]]
-name = "livekit-plugins-elevenlabs"
+name = "livekit-plugins-deepgram"
 version = "1.2.16"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "livekit-agents", extra = ["codecs"] },
+    { name = "numpy" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1c/b4/917a150aeba802f5d466ee12b356d95c13c63242d16613c73a356c7f182f/livekit_plugins_elevenlabs-1.2.16.tar.gz", hash = "sha256:474e4d8bfa333be20e6a06a47db83ad991f04416fe891d97325fa7f48d878a9e", size = 12199, upload-time = "2025-10-27T05:08:28.103Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/27/1d/207b63d56d310237e28c3a6be74a77db7bc71763507c03527af051378d28/livekit_plugins_deepgram-1.2.16.tar.gz", hash = "sha256:39ff173d797d44d7b147723e22bee60d6f5c75f2e2ef4c2839b98f59d1de201b", size = 15203, upload-time = "2025-10-27T05:08:26.424Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/53/c8/9cda1bc6d41ab816a01b32d91b166609802bb0759d6b7a0269e951e808c0/livekit_plugins_elevenlabs-1.2.16-py3-none-any.whl", hash = "sha256:e86c4111bbb713c558c55563a2681a718cea8736fbd460ff23193697775a248f", size = 14049, upload-time = "2025-10-27T05:08:26.987Z" },
+    { url = "https://files.pythonhosted.org/packages/30/d2/0950aef67b3a43b41daf91653a345e445db27a92edb0a9d665fbe49f9746/livekit_plugins_deepgram-1.2.16-py3-none-any.whl", hash = "sha256:6c76261040bbfc0cf318e5ce11ba2f0499a194a3cf293d6780865dcf707df22a", size = 20922, upload-time = "2025-10-27T05:08:25.539Z" },
 ]
 
 [[package]]
@@ -1600,14 +1601,14 @@ name = "support-agent"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
-    { name = "livekit-agents", extra = ["assemblyai", "bey", "elevenlabs", "groq", "silero"] },
+    { name = "livekit-agents", extra = ["assemblyai", "bey", "deepgram", "groq", "silero"] },
     { name = "livekit-plugins-noise-cancellation" },
     { name = "python-dotenv" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "livekit-agents", extras = ["assemblyai", "bey", "elevenlabs", "groq", "silero"], specifier = "~=1.2" },
+    { name = "livekit-agents", extras = ["assemblyai", "bey", "deepgram", "groq", "silero"], specifier = "~=1.2" },
     { name = "livekit-plugins-noise-cancellation", specifier = "~=0.2" },
     { name = "python-dotenv", specifier = ">=1.2.1" },
 ]
