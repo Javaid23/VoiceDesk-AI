@@ -15,8 +15,7 @@ import { TrackToggle } from '../track-toggle';
 import { UseAgentControlBarProps, useAgentControlBar } from './hooks/use-agent-control-bar';
 
 export interface AgentControlBarProps
-  extends React.HTMLAttributes<HTMLDivElement>,
-    UseAgentControlBarProps {
+  extends React.HTMLAttributes<HTMLDivElement>, UseAgentControlBarProps {
   capabilities: Pick<AppConfig, 'supportsChatInput' | 'supportsVideoInput' | 'supportsScreenShare'>;
   onChatOpenChange?: (open: boolean) => void;
   onSendMessage?: (message: string) => Promise<void>;

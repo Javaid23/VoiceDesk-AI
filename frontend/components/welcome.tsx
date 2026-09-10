@@ -1,6 +1,5 @@
-import { Button } from '@/components/ui/button';
-import { cn } from '@/lib/utils';
 import Image from 'next/image';
+import { Button } from '@/components/ui/button';
 
 interface WelcomeProps {
   disabled: boolean;
@@ -20,14 +19,7 @@ export const Welcome = ({
       inert={disabled}
       className="fixed inset-0 z-10 mx-auto flex h-svh flex-col items-center justify-center text-center"
     >
-      <Image
-        src="/logo.png"
-        width={475}
-        height={125}
-        alt="Logo"
-        className="mb-4"
-        priority
-      />
+      <Image src="/logo.png" width={475} height={125} alt="Logo" className="mb-4" priority />
 
       <p className="text-fg1 max-w-prose pt-1 leading-6 font-medium">
         Chat live with your voice AI agent
