@@ -1,0 +1,22 @@
+# Local virtualenv -- must never be shipped (hundreds of MB, wrong platform)
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Secrets: provided as LiveKit Cloud secrets at deploy time, never baked in
+.env
+.env.local
+.env.*.local
+
+# The bundled corporate demo app is screen-shared from a local machine and is
+# not needed by the deployed agent; its node_modules would bloat the image.
+generic_corporate_app/node_modules/
+generic_corporate_app/dist/
+generic_corporate_app/bun.lockb
+
+# Misc
+.git/
+.gitignore
+*.log
+.DS_Store

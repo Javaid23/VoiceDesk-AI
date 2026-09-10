@@ -139,6 +139,31 @@ async def entrypoint(ctx: agents.JobContext):
     )
     mark("session built")
 
+    # --- per-turn latency breakdown: how long after the user stops talking
+    # until the reply starts. eou = end-of-utterance detection, ttft = LLM
+    # time-to-first-token, ttfb = TTS time-to-first-byte. Their sum is what
+    # the caller perceives as "thinking time" (the avatar adds its own
+    # render delay on top, which is not visible from here).
+    @session.on("metrics_collected")
+    def _on_metrics(ev) -> None:  # MetricsCollectedEvent
+        m = ev.metrics
+        kind = type(m).__name__
+        if kind == "EOUMetrics":
+            logger.info(
+                "latency: EOU  end_of_utterance=%.2fs transcription=%.2fs",
+                m.end_of_utterance_delay, m.transcription_delay,
+            )
+        elif kind == "LLMMetrics":
+            logger.info(
+                "latency: LLM  ttft=%.2fs total=%.2fs tokens=%s cancelled=%s",
+                m.ttft, m.duration, m.completion_tokens, m.cancelled,
+            )
+        elif kind == "TTSMetrics":
+            logger.info(
+                "latency: TTS  ttfb=%.2fs total=%.2fs audio=%.2fs chars=%s cancelled=%s",
+                m.ttfb, m.duration, m.audio_duration, m.characters_count, m.cancelled,
+            )
+
     avatar = bey.AvatarSession(
         avatar_id=os.getenv("BEY_AVATAR_ID"),  # ID of the Beyond Presence avatar to use
     )

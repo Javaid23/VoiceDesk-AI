@@ -15,19 +15,22 @@ async def unblock_user(context: RunContext, username: str) -> str:
     Unblock users so they can log in again.
     """
     try:
-        # Get path to blockusers.txt
+        # Clearing the block list is best-effort: it only takes effect for the
+        # bundled corporate demo app when that app is served from the same
+        # machine as the agent. When the agent runs in the cloud the file may
+        # be absent or unread -- that must not fail the tool, because the
+        # user-visible result is the RPC notification sent below.
         THIS_DIR = Path(__file__).parent
-        block_file = THIS_DIR / "generic_corporate_app" / "public" / "blockusers.txt"
-        
-        if not block_file.exists():
-            logging.error(f"Block file not found at {block_file}")
-            return "Unblock failed: blockusers.txt file not found"
-            
-        # Clear the file contents
-        block_file.write_text("")
-        
-        logging.info("Successfully cleared blockusers.txt")
-        
+        block_file = Path(
+            os.getenv("BLOCKUSERS_FILE", THIS_DIR / "generic_corporate_app" / "public" / "blockusers.txt")
+        )
+
+        if block_file.exists():
+            block_file.write_text("")
+            logging.info("Cleared block list at %s", block_file)
+        else:
+            logging.warning("Block list not found at %s -- skipping file update", block_file)
+
         room = get_job_context().room
         participant_identity = next(iter(room.remote_participants))
         
