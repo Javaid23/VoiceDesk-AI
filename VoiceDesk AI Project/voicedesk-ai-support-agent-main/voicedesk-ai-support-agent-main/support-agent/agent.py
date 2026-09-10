@@ -11,10 +11,14 @@ from livekit.plugins import (
 )
 from tools import unblock_user, send_email
 from prompts import AGENT_INSTRUCTIONS
+import logging
 import os
+import time
 from livekit.agents import BackgroundAudioPlayer, AudioConfig, BuiltinAudioClip
 
 load_dotenv(".env.local")
+
+logger = logging.getLogger("voicedesk")
 
 # Domain vocabulary boosted in AssemblyAI transcription so support-specific
 # terms (product name, tool names, IT jargon) are recognized reliably.
@@ -48,15 +52,68 @@ def prewarm(proc: agents.JobProcess):
 
 
 async def entrypoint(ctx: agents.JobContext):
-    # Force ICE onto TURN relay (TCP/TLS 443) instead of direct UDP.
-    # Direct UDP host/srflx candidates are blocked or unreliable on some
-    # networks/firewalls, which shows up as "Subscriber pc state failed" /
-    # "resuming connection" and eventually an AssignmentTimeoutError.
-    await ctx.connect(
-        rtc_config=rtc.RtcConfiguration(
+    t0 = time.perf_counter()
+
+    def mark(phase: str) -> None:
+        # Per-phase join timings, so slow joins can be attributed precisely.
+        logger.info("timing: %-16s +%.1fs", phase, time.perf_counter() - t0)
+
+    # --- join diagnostics: what does this job connect with, and does the
+    # connection go through a retry cycle? (ctx.connect() is a thin wrapper
+    # around rtc.Room.connect(url, token); a standalone Room.connect() from
+    # this machine takes ~5s while the job's takes a near-constant ~44s.)
+    info = ctx._info  # RunningJobInfo: the url/token the server assigned
+    try:
+        import base64
+        import json as _json
+        payload = info.token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        claims = _json.loads(base64.urlsafe_b64decode(payload))
+        video = dict(claims.get("video", {}))
+        logger.info(
+            "join: url=%s room=%s identity=%s grants=%s",
+            info.url, video.pop("room", None), claims.get("sub"), video,
+        )
+    except Exception as e:  # diagnostics must never break the call
+        logger.info("join: url=%s (token decode failed: %s)", getattr(info, "url", "?"), e)
+
+    def _trace(ev: str) -> None:
+        def _h(*args):
+            mark(f"room event {ev} {args[0] if args else ''}")
+        ctx.room.on(ev, _h)
+
+    for _ev in ("connected", "disconnected", "reconnecting", "reconnected",
+                "connection_state_changed"):
+        _trace(_ev)
+
+    # --- workaround: the SFU node hostname in the job assignment publishes
+    # IPv6 (AAAA) records, and IPv6 is black-holed on this network -- every
+    # TCP connect to those addresses hangs until timeout before the engine
+    # falls back to IPv4 (measured: two ~20s timeouts = the constant ~44s
+    # join). The project's main hostname is IPv4-only and the token is
+    # project-scoped, so connecting through it works and takes ~2-5s.
+    # Set LIVEKIT_USE_ASSIGNED_URL=1 to restore the default (e.g. once IPv6
+    # is fixed or disabled on this machine).
+    main_url = os.getenv("LIVEKIT_URL")
+    if main_url and os.getenv("LIVEKIT_USE_ASSIGNED_URL") != "1" and info.url != main_url:
+        try:
+            import dataclasses
+            ctx._info = dataclasses.replace(info, url=main_url)
+        except Exception:
+            info.url = main_url  # not a dataclass? plain assignment
+        logger.info("join: overriding assigned url -> LIVEKIT_URL=%s", main_url)
+
+    # Let ICE use every candidate type (direct UDP first, TURN relay as the
+    # automatic fallback) -- fastest path on a healthy network. Relay-only was
+    # forced while a firewall was blocking inbound traffic to python.exe; set
+    # LIVEKIT_FORCE_RELAY=1 to get that behaviour back without a code change.
+    rtc_config = None
+    if os.getenv("LIVEKIT_FORCE_RELAY") == "1":
+        rtc_config = rtc.RtcConfiguration(
             ice_transport_type=rtc.IceTransportType.TRANSPORT_RELAY,
-        ),
-    )
+        )
+    await ctx.connect(rtc_config=rtc_config)
+    mark("room connected")
 
     # Modular voice pipeline (replaces the bundled OpenAI Realtime API):
     #   AssemblyAI (STT)  ->  Groq (LLM)  ->  Deepgram Aura (TTS)
@@ -72,14 +129,23 @@ async def entrypoint(ctx: agents.JobContext):
         ),
         vad=ctx.proc.userdata["vad"],
         turn_detection="stt",
+        # Start LLM inference on interim transcripts, before end-of-turn is
+        # final; the draft is discarded if the transcript changes. Cuts
+        # perceived response latency noticeably.
+        preemptive_generation=True,
+        # Shorter pause after AssemblyAI signals end-of-turn before we commit
+        # the user's turn (default 0.5s).
+        min_endpointing_delay=0.3,
     )
+    mark("session built")
 
     avatar = bey.AvatarSession(
-    avatar_id=os.getenv("BEY_AVATAR_ID"),  # ID of the Beyond Presence avatar to use
+        avatar_id=os.getenv("BEY_AVATAR_ID"),  # ID of the Beyond Presence avatar to use
     )
 
     # Start the avatar and wait for it to join
     await avatar.start(session, room=ctx.room)
+    mark("avatar joined")
 
     await session.start(
         room=ctx.room,
@@ -91,6 +157,7 @@ async def entrypoint(ctx: agents.JobContext):
             video_enabled=True,
         ),
     )
+    mark("session started")
 
     background_audio = BackgroundAudioPlayer(
         thinking_sound=[
@@ -103,6 +170,7 @@ async def entrypoint(ctx: agents.JobContext):
     await session.generate_reply(
         instructions="Greet the user and offer your assistance. You should start by speaking in English."
     )
+    mark("greeting sent")
 
 
 if __name__ == "__main__":
@@ -110,6 +178,16 @@ if __name__ == "__main__":
         agents.WorkerOptions(
             entrypoint_fnc=entrypoint,
             prewarm_fnc=prewarm,
+            # Run each job in its own process (the default on Linux/macOS; Windows
+            # falls back to THREAD only because of an old BrokenPipeError bug).
+            # Measured here: the same rtc.Room.connect() took ~44s inside the
+            # thread-executor worker process vs ~5s in a fresh process.
+            job_executor_type=agents.JobExecutorType.PROCESS,
+            # NOTE: `agent.py dev` force-overrides the executor back to THREAD
+            # (livekit/agents/cli/cli.py); run `agent.py start` to get PROCESS.
+            # In `start` mode the worker refuses jobs above 70% CPU load by
+            # default, which a busy dev laptop exceeds -- disable that gate.
+            load_threshold=float("inf"),
             # Keep one executor pre-spawned and pre-warmed (VAD already loaded)
             # so the first call doesn't pay the model-load cost on its critical path.
             num_idle_processes=1,
