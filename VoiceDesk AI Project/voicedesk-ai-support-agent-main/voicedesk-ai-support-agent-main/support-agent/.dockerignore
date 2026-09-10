@@ -1,22 +1,73 @@
-# Local virtualenv -- must never be shipped (hundreds of MB, wrong platform)
-.venv/
-venv/
+# Project tests
+test/
+tests/
+eval/
+evals/
+
+# Python bytecode and artifacts
 __pycache__/
 *.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
 
-# Secrets: provided as LiveKit Cloud secrets at deploy time, never baked in
-.env
-.env.local
-.env.*.local
+# Virtual environments
+.venv/
+venv/
 
-# The bundled corporate demo app is screen-shared from a local machine and is
-# not needed by the deployed agent; its node_modules would bloat the image.
-generic_corporate_app/node_modules/
-generic_corporate_app/dist/
-generic_corporate_app/bun.lockb
+# Caches and test output
+.cache/
+.pytest_cache/
+.ruff_cache/
+coverage/
 
-# Misc
-.git/
-.gitignore
+# Logs and temp files
 *.log
+*.gz
+*.tgz
+.tmp
+.cache
+
+# Environment variables
+.env
+.env.*
+
+# VCS, editor, OS
+.git
+.gitignore
+.gitattributes
+.github/
+.idea/
+.vscode/
 .DS_Store
+
+# Project docs and misc
+README.md
+CONTRIBUTING.md
+LICENSE
+
+# Coding agent files
+.claude/
+.codex/
+.cursor/
+.windsurf/
+.gemini/
+.cline/
+.clinerules
+.clinerules/
+.aider*
+.cursorrules
+.cursorignore
+.cursorindexingignore
+.clineignore
+.codeiumignore
+.geminiignore
+.windsurfrules
+CLAUDE.md
+AGENTS.md
+GEMINI.md
+.github/copilot-instructions.md
+.github/personal-instructions.md
+.github/instructions/
