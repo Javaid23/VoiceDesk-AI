@@ -1,13 +1,12 @@
 from dotenv import load_dotenv
 
-from livekit import agents
+from livekit import agents, rtc
 from livekit.agents import AgentSession, Agent, RoomInputOptions
 from livekit.plugins import (
     groq,
     assemblyai,
     deepgram,
     silero,
-    noise_cancellation,
     bey
 )
 from tools import unblock_user, send_email
@@ -40,9 +39,27 @@ class Assistant(Agent):
         tools=[unblock_user, send_email])
 
 
+def prewarm(proc: agents.JobProcess):
+    # Load the (CPU-bound) Silero VAD model once per worker process, before
+    # any job arrives. Loading it inside the entrypoint blocks the asyncio
+    # event loop for several seconds on every call, which delays ctx.connect()
+    # and can trip the server's room-join / job-assignment timeout.
+    proc.userdata["vad"] = silero.VAD.load()
+
+
 async def entrypoint(ctx: agents.JobContext):
+    # Force ICE onto TURN relay (TCP/TLS 443) instead of direct UDP.
+    # Direct UDP host/srflx candidates are blocked or unreliable on some
+    # networks/firewalls, which shows up as "Subscriber pc state failed" /
+    # "resuming connection" and eventually an AssignmentTimeoutError.
+    await ctx.connect(
+        rtc_config=rtc.RtcConfiguration(
+            ice_transport_type=rtc.IceTransportType.TRANSPORT_RELAY,
+        ),
+    )
+
     # Modular voice pipeline (replaces the bundled OpenAI Realtime API):
-    #   AssemblyAI (STT)  ->  OpenAI (LLM)  ->  ElevenLabs (TTS)
+    #   AssemblyAI (STT)  ->  Groq (LLM)  ->  Deepgram Aura (TTS)
     # with Silero VAD for interruptions and AssemblyAI's built-in
     # end-of-turn detection driving turn-taking (turn_detection="stt").
     session = AgentSession(
@@ -53,7 +70,7 @@ async def entrypoint(ctx: agents.JobContext):
         tts=deepgram.TTS(
             model=os.getenv("DEEPGRAM_TTS_MODEL", "aura-2-andromeda-en"),
         ),
-        vad=silero.VAD.load(),
+        vad=ctx.proc.userdata["vad"],
         turn_detection="stt",
     )
 
@@ -68,10 +85,10 @@ async def entrypoint(ctx: agents.JobContext):
         room=ctx.room,
         agent=Assistant(),
         room_input_options=RoomInputOptions(
-            # For telephony applications, use `BVCTelephony` instead for best results
-            noise_cancellation=noise_cancellation.BVC(),
+            # BVC noise cancellation requires a LiveKit Cloud entitlement that
+            # isn't enabled on this project (it was timing out on every call
+            # trying to fetch that config, adding delay) -- left off for now.
             video_enabled=True,
-
         ),
     )
 
@@ -89,4 +106,15 @@ async def entrypoint(ctx: agents.JobContext):
 
 
 if __name__ == "__main__":
-    agents.cli.run_app(agents.WorkerOptions(entrypoint_fnc=entrypoint))
+    agents.cli.run_app(
+        agents.WorkerOptions(
+            entrypoint_fnc=entrypoint,
+            prewarm_fnc=prewarm,
+            # Keep one executor pre-spawned and pre-warmed (VAD already loaded)
+            # so the first call doesn't pay the model-load cost on its critical path.
+            num_idle_processes=1,
+            # The Silero VAD load in prewarm() can take well over the 10s default on
+            # a slow/cold machine, which showed up as "error initializing process".
+            initialize_process_timeout=120.0,
+        )
+    )

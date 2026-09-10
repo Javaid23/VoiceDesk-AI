@@ -75,7 +75,9 @@ export const SessionView = ({
           });
           room.disconnect();
         }
-      }, 10_000);
+        // Give the agent time to cold-start (VAD model load, room connect,
+        // avatar join). 10s was hanging up before the agent could arrive.
+      }, 120_000);
 
       return () => clearTimeout(timeout);
     }
