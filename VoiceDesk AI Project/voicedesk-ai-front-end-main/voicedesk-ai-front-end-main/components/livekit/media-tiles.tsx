@@ -30,7 +30,10 @@ const animationProps = {
     scale: 0,
   },
   transition: {
-    type: 'spring',
+    // `as const` keeps this as the literal 'spring' rather than widening to
+    // `string`; motion's Transition type only accepts the literal union, so
+    // without it every spread of this object fails to typecheck.
+    type: 'spring' as const,
     stiffness: 675,
     damping: 75,
     mass: 1,

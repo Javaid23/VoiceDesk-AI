@@ -11,7 +11,11 @@ export function ChatInput({ onSend, className, disabled, ...props }: ChatInputPr
   const inputRef = useRef<HTMLInputElement>(null);
   const [message, setMessage] = useState<string>('');
 
-  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+  // Derive the event type from the form's own onSubmit prop rather than naming
+  // it directly: React 19 widened this to SubmitEvent (which carries
+  // `submitter`), so hardcoding React.FormEvent fails to typecheck when
+  // forwarding the event to props.onSubmit.
+  const handleSubmit: NonNullable<ChatInputProps['onSubmit']> = (e) => {
     e.preventDefault();
     props.onSubmit?.(e);
     onSend?.(message);
