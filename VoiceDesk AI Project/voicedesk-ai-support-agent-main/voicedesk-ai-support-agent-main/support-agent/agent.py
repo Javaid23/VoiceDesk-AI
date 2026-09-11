@@ -1,7 +1,13 @@
 from dotenv import load_dotenv
 
 from livekit import agents, rtc
-from livekit.agents import AgentSession, Agent, RoomInputOptions
+from livekit.agents import AgentSession, Agent, RoomInputOptions, utils
+from livekit.agents.voice.io import AudioOutput
+# Private module; pinned by uv.lock (livekit-agents 1.2.16). Re-check on upgrade.
+from livekit.agents.voice.avatar._datastream_io import (
+    AUDIO_STREAM_TOPIC,
+    DataStreamAudioOutput,
+)
 from livekit.plugins import (
     groq,
     assemblyai,
@@ -11,6 +17,7 @@ from livekit.plugins import (
 )
 from tools import unblock_user, send_email
 from prompts import AGENT_INSTRUCTIONS
+import asyncio
 import logging
 import os
 import time
@@ -35,6 +42,139 @@ SUPPORT_KEYTERMS = [
     "Beyond Presence",
     "LiveKit",
 ]
+
+
+async def wait_for_stable_avatar(
+    room: rtc.Room,
+    identity: str,
+    *,
+    settle: float = 4.0,
+    timeout: float = 30.0,
+) -> bool:
+    """Wait until the avatar participant has been present, with a video
+    track, for `settle` uninterrupted seconds.
+
+    Observed on LiveKit Cloud (DEBUG logs, room 6261): the Beyond Presence
+    avatar joins, then leaves and rejoins ~8s later. bey.AvatarSession.start()
+    returns on the *first* join, so the greeting was streamed into the gap
+    and stalled -- the agent stayed "speaking", never took the user's turn,
+    and hung on shutdown. Whether a call worked was a race against the swap.
+    Waiting for a stable participant makes the greeting land on the instance
+    that stays. Returns False (and the caller proceeds anyway) on timeout.
+    """
+    stable_since: float | None = None
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        p = room.remote_participants.get(identity)
+        has_video = p is not None and any(
+            pub.kind == rtc.TrackKind.KIND_VIDEO for pub in p.track_publications.values()
+        )
+        now = time.monotonic()
+        if has_video:
+            if stable_since is None:
+                stable_since = now
+            elif now - stable_since >= settle:
+                return True
+        elif stable_since is not None:
+            logger.info("avatar %s left during settle window; waiting for it to rejoin", identity)
+            stable_since = None
+        await asyncio.sleep(0.25)
+    logger.warning("avatar %s never stabilised within %.0fs; continuing anyway", identity, timeout)
+    return False
+
+
+class ResilientAvatarAudioOutput(DataStreamAudioOutput):
+    """DataStreamAudioOutput that cannot wedge the session.
+
+    The stock output awaits each stream open/write on an FFI ack with no
+    timeout, and the session then awaits the avatar's "playback finished"
+    RPC with no timeout. On LiveKit Cloud the Beyond Presence avatar was
+    observed to stop consuming audio (DEBUG logs, rooms 6896/7671/4464/6261):
+    the greeting never drained, no ack ever came, the agent stayed
+    "speaking", ignored every user turn, and had to be force-killed.
+
+    Two bounded behaviours instead:
+    - capture_frame: the open/write is bounded. On stall the writer is dropped
+      and the next frame opens a fresh stream to whichever participant holds
+      the avatar identity now. Frames during the stall are lost (a glitch
+      beats a hang).
+    - flush: a watchdog is armed per segment. If the avatar never confirms
+      playback, we report it ourselves so the session can take the next turn.
+    """
+
+    WRITE_TIMEOUT = 5.0
+    PLAYOUT_GRACE = 5.0
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._segments_flushed = 0
+        self._segments_acked = 0
+
+    async def capture_frame(self, frame: rtc.AudioFrame) -> None:
+        # Same readiness gate as the base class, deliberately unbounded: the
+        # avatar participant must exist before anything can be sent.
+        if self._start_atask is None:
+            self._start_atask = asyncio.create_task(self._start_task())
+        await asyncio.shield(self._start_atask)
+
+        # Segment accounting lives in the grandparent; skip the base class's
+        # unbounded open/write and do a bounded version of it below.
+        await AudioOutput.capture_frame(self, frame)
+        try:
+            await asyncio.wait_for(self._open_and_write(frame), timeout=self.WRITE_TIMEOUT)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "avatar audio stream stalled for %.0fs; dropping it, will re-open on next frame",
+                self.WRITE_TIMEOUT,
+            )
+            self._stream_writer = None
+
+    async def _open_and_write(self, frame: rtc.AudioFrame) -> None:
+        if not self._stream_writer:
+            self._stream_writer = await self._room.local_participant.stream_bytes(
+                name=utils.shortuuid("AUDIO_"),
+                topic=AUDIO_STREAM_TOPIC,
+                destination_identities=[self._destination_identity],
+                attributes={
+                    "sample_rate": str(frame.sample_rate),
+                    "num_channels": str(frame.num_channels),
+                },
+            )
+            self._pushed_duration = 0.0
+        await self._stream_writer.write(bytes(frame.data))
+        self._pushed_duration += frame.duration
+
+    def flush(self) -> None:
+        pushed = self._pushed_duration
+        super().flush()
+        self._segments_flushed += 1
+        segment = self._segments_flushed
+
+        async def _watchdog() -> None:
+            await asyncio.sleep(pushed + self.PLAYOUT_GRACE)
+            if self._segments_acked < segment:
+                logger.warning(
+                    "avatar never confirmed playback of segment %d (%.1fs of audio); "
+                    "reporting playback finished so the session can continue",
+                    segment, pushed,
+                )
+                self._segments_acked = segment
+                self.on_playback_finished(playback_position=pushed, interrupted=False)
+
+        task = asyncio.create_task(_watchdog())
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    def on_playback_finished(self, *, playback_position: float, interrupted: bool,
+                             synchronized_transcript: str | None = None) -> None:
+        # A real ack from the avatar. Never let acked exceed flushed, so a late
+        # ack after the watchdog fired can't mask a stall on a later segment.
+        self._segments_acked = min(self._segments_acked + 1, self._segments_flushed)
+        super().on_playback_finished(
+            playback_position=playback_position,
+            interrupted=interrupted,
+            synchronized_transcript=synchronized_transcript,
+        )
 
 
 class Assistant(Agent):
@@ -85,6 +225,21 @@ async def entrypoint(ctx: agents.JobContext):
     for _ev in ("connected", "disconnected", "reconnecting", "reconnected",
                 "connection_state_changed"):
         _trace(_ev)
+
+    # Participant/track lifecycle, with identity. livekit-agents does not log
+    # these itself, and they are what shows whether the avatar participant
+    # leaves and rejoins (and when) relative to the greeting stream.
+    def _trace_participant(ev: str) -> None:
+        def _h(*args):
+            ident = next((getattr(a, "identity", None) for a in args
+                          if getattr(a, "identity", None)), "?")
+            mark(f"participant event {ev} identity={ident}")
+        ctx.room.on(ev, _h)
+
+    for _ev in ("participant_connected", "participant_disconnected",
+                "track_published", "track_unpublished",
+                "track_subscribed", "track_unsubscribed"):
+        _trace_participant(_ev)
 
     # --- workaround: the SFU node hostname in the job assignment publishes
     # IPv6 (AAAA) records, and IPv6 is black-holed on this network -- every
@@ -184,6 +339,21 @@ async def entrypoint(ctx: agents.JobContext):
     # Start the avatar and wait for it to join
     await avatar.start(session, room=ctx.room, livekit_url=bey_livekit_url)
     mark("avatar joined")
+
+    # avatar.start() resolves on the first join, but the avatar participant
+    # leaves and rejoins shortly after. Don't start the session (and the
+    # greeting) until it has been stable, or the audio streams into the gap.
+    avatar_identity = getattr(avatar, "_avatar_participant_identity", "bey-avatar-agent")
+    await wait_for_stable_avatar(ctx.room, avatar_identity)
+    mark("avatar stable")
+
+    # Replace the plugin's output with the bounded one. session.start() wraps
+    # whatever is in output.audio, so this has to happen before it.
+    session.output.audio = ResilientAvatarAudioOutput(
+        ctx.room,
+        destination_identity=avatar_identity,
+        wait_remote_track=rtc.TrackKind.KIND_VIDEO,
+    )
 
     await session.start(
         room=ctx.room,
