@@ -226,19 +226,50 @@ class Assistant(Agent):
                 ):
                     _consume(pub.track, pub.source)
 
+    # A full-res frame costs ~7000 input tokens, which alone exceeds Groq's
+    # free-tier input limit (ITPM 7000). Downscale before sending; this is
+    # still legible for reading an error dialog.
+    VISION_WIDTH = 768
+    VISION_HEIGHT = 432
+
     async def on_user_turn_completed(
         self, turn_ctx: llm.ChatContext, new_message: llm.ChatMessage
     ) -> None:
+        # Old turns keep their images, so the context accumulates them until
+        # the model refuses ("Too many images provided. This model supports up
+        # to 3 images") and the token cost multiplies. Only the current screen
+        # is useful, so drop the rest.
+        dropped = 0
+        for item in turn_ctx.items:
+            if getattr(item, "type", None) != "message":
+                continue
+            content = getattr(item, "content", None)
+            if not isinstance(content, list):
+                continue
+            kept = [c for c in content if not isinstance(c, llm.ImageContent)]
+            dropped += len(content) - len(kept)
+            item.content = kept
+        if dropped:
+            logger.debug("dropped %d stale screen frame(s) from context", dropped)
+
         # Attach the current screen only when there is one; sending an image
         # every turn otherwise would cost tokens for nothing.
         frame = self._latest_frame
         if frame is None:
             return
+        image = llm.ImageContent(
+            image=frame,
+            inference_width=self.VISION_WIDTH,
+            inference_height=self.VISION_HEIGHT,
+        )
         if isinstance(new_message.content, list):
-            new_message.content.append(llm.ImageContent(image=frame))
+            new_message.content.append(image)
         else:
-            new_message.content = [new_message.content, llm.ImageContent(image=frame)]
-        logger.info("attached screen frame to user turn (%dx%d)", frame.width, frame.height)
+            new_message.content = [new_message.content, image]
+        logger.info(
+            "attached screen frame to user turn (%dx%d -> %dx%d)",
+            frame.width, frame.height, self.VISION_WIDTH, self.VISION_HEIGHT,
+        )
 
 
 def prewarm(proc: agents.JobProcess):
