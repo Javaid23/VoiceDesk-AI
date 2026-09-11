@@ -40,10 +40,9 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# Package managers
-pnpm-lock.yaml
-yarn.lock
-package-lock.json
+# Lockfiles are intentionally committed: this is a deployed application, not a
+# library. Without pnpm-lock.yaml, Vercel cannot detect pnpm and falls back to
+# npm, resolving different dependency versions than the ones verified locally.
 
 # Cache
 .cache/
