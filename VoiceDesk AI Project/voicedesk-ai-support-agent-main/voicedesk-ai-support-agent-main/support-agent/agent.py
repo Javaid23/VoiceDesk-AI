@@ -1,7 +1,7 @@
 from dotenv import load_dotenv
 
 from livekit import agents, rtc
-from livekit.agents import AgentSession, Agent, RoomInputOptions, utils
+from livekit.agents import AgentSession, Agent, RoomInputOptions, llm, utils
 from livekit.agents.voice.io import AudioOutput
 # Private module; pinned by uv.lock (livekit-agents 1.2.16). Re-check on upgrade.
 from livekit.agents.voice.avatar._datastream_io import (
@@ -178,9 +178,70 @@ class ResilientAvatarAudioOutput(DataStreamAudioOutput):
 
 
 class Assistant(Agent):
+    """Support agent that can see the user's shared screen.
+
+    AgentSession only forwards video frames to a *realtime* model
+    (AgentActivity.push_video is a no-op when _rt_session is None), so with a
+    modular STT -> LLM -> TTS pipeline every screen-share frame is discarded
+    and the agent is effectively blind. Instead we keep the most recent frame
+    ourselves and attach it to each completed user turn, which is the
+    supported way to give a non-realtime pipeline vision.
+    """
+
     def __init__(self) -> None:
         super().__init__(instructions=AGENT_INSTRUCTIONS,
         tools=[unblock_user, send_email])
+        self._latest_frame: rtc.VideoFrame | None = None
+        self._frame_tasks: set[asyncio.Task] = set()
+
+    def watch_video(self, room: rtc.Room) -> None:
+        """Track the newest frame from any video the user publishes."""
+
+        def _consume(track: rtc.Track, source: rtc.TrackSource.ValueType) -> None:
+            async def _reader() -> None:
+                label = rtc.TrackSource.Name(source)
+                logger.info("watching video source=%s", label)
+                try:
+                    async for ev in rtc.VideoStream(track):
+                        self._latest_frame = ev.frame
+                finally:
+                    logger.info("video source ended source=%s", label)
+                    self._latest_frame = None
+
+            task = asyncio.create_task(_reader())
+            self._frame_tasks.add(task)
+            task.add_done_callback(self._frame_tasks.discard)
+
+        WANTED = (rtc.TrackSource.SOURCE_SCREENSHARE, rtc.TrackSource.SOURCE_CAMERA)
+
+        @room.on("track_subscribed")
+        def _on_sub(track: rtc.Track, pub: rtc.TrackPublication, participant: rtc.RemoteParticipant):
+            if track.kind == rtc.TrackKind.KIND_VIDEO and pub.source in WANTED:
+                _consume(track, pub.source)
+
+        # Anything already published before we attached the handler.
+        for participant in room.remote_participants.values():
+            for pub in participant.track_publications.values():
+                if (
+                    pub.kind == rtc.TrackKind.KIND_VIDEO
+                    and pub.source in WANTED
+                    and pub.track is not None
+                ):
+                    _consume(pub.track, pub.source)
+
+    async def on_user_turn_completed(
+        self, turn_ctx: llm.ChatContext, new_message: llm.ChatMessage
+    ) -> None:
+        # Attach the current screen only when there is one; sending an image
+        # every turn otherwise would cost tokens for nothing.
+        frame = self._latest_frame
+        if frame is None:
+            return
+        if isinstance(new_message.content, list):
+            new_message.content.append(llm.ImageContent(image=frame))
+        else:
+            new_message.content = [new_message.content, llm.ImageContent(image=frame)]
+        logger.info("attached screen frame to user turn (%dx%d)", frame.width, frame.height)
 
 
 def prewarm(proc: agents.JobProcess):
@@ -278,7 +339,16 @@ async def entrypoint(ctx: agents.JobContext):
         stt=assemblyai.STT(
             keyterms_prompt=SUPPORT_KEYTERMS,
         ),
-        llm=groq.LLM(model="openai/gpt-oss-20b"),
+        # Vision-capable, so the agent can read the user's shared screen.
+        # openai/gpt-oss-* are text-only and reject images outright
+        # ("content must be a string"), which made screen share useless.
+        # reasoning_effort="none" is required: without it this model emits
+        # <think> blocks that the TTS would read aloud, and a "say hello"
+        # turn measured 2332ms instead of 191ms.
+        llm=groq.LLM(
+            model=os.getenv("GROQ_MODEL", "qwen/qwen3.6-27b"),
+            reasoning_effort="none",
+        ),
         tts=deepgram.TTS(
             model=os.getenv("DEEPGRAM_TTS_MODEL", "aura-2-andromeda-en"),
         ),
@@ -355,9 +425,12 @@ async def entrypoint(ctx: agents.JobContext):
         wait_remote_track=rtc.TrackKind.KIND_VIDEO,
     )
 
+    assistant = Assistant()
+    assistant.watch_video(ctx.room)
+
     await session.start(
         room=ctx.room,
-        agent=Assistant(),
+        agent=assistant,
         room_input_options=RoomInputOptions(
             # BVC noise cancellation requires a LiveKit Cloud entitlement that
             # isn't enabled on this project (it was timing out on every call
