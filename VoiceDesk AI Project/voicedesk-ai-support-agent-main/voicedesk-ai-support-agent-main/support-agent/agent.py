@@ -168,8 +168,21 @@ async def entrypoint(ctx: agents.JobContext):
         avatar_id=os.getenv("BEY_AVATAR_ID"),  # ID of the Beyond Presence avatar to use
     )
 
+    # Beyond Presence's API strictly requires ws:// or wss:// and rejects
+    # anything else. bey.AvatarSession defaults to os.getenv("LIVEKIT_URL"),
+    # but on LiveKit Cloud's hosted-agent runtime that env var is injected as
+    # https://... (LiveKit's own client tolerates that scheme; Bey's
+    # validator does not), which made every cloud call fail with "Invalid
+    # LiveKit URL" and the avatar never joining. Normalize the scheme and
+    # pass it explicitly rather than relying on the env var.
+    bey_livekit_url = os.getenv("LIVEKIT_URL", "")
+    if bey_livekit_url.startswith("https://"):
+        bey_livekit_url = "wss://" + bey_livekit_url[len("https://"):]
+    elif bey_livekit_url.startswith("http://"):
+        bey_livekit_url = "ws://" + bey_livekit_url[len("http://"):]
+
     # Start the avatar and wait for it to join
-    await avatar.start(session, room=ctx.room)
+    await avatar.start(session, room=ctx.room, livekit_url=bey_livekit_url)
     mark("avatar joined")
 
     await session.start(
