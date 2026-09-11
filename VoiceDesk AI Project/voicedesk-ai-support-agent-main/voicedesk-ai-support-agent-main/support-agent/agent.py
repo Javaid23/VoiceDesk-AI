@@ -190,6 +190,7 @@ class Assistant(Agent):
         tools=[unblock_user, send_email])
         self._latest_frame: rtc.VideoFrame | None = None
         self._frame_tasks: set[asyncio.Task] = set()
+        self._last_image_at: float = 0.0
 
     def watch_video(self, room: rtc.Room) -> None:
         """Track the newest frame from any video the user publishes."""
@@ -209,7 +210,10 @@ class Assistant(Agent):
             self._frame_tasks.add(task)
             task.add_done_callback(self._frame_tasks.discard)
 
-        WANTED = (rtc.TrackSource.SOURCE_SCREENSHARE, rtc.TrackSource.SOURCE_CAMERA)
+        # Screen share only. The webcam tells a support agent nothing, and
+        # subscribing to it meant a frame was attached to every turn even when
+        # nothing was being shared -- pure token cost.
+        WANTED = (rtc.TrackSource.SOURCE_SCREENSHARE,)
 
         @room.on("track_subscribed")
         def _on_sub(track: rtc.Track, pub: rtc.TrackPublication, participant: rtc.RemoteParticipant):
@@ -226,11 +230,23 @@ class Assistant(Agent):
                 ):
                     _consume(pub.track, pub.source)
 
-    # A full-res frame costs ~7000 input tokens, which alone exceeds Groq's
-    # free-tier input limit (ITPM 7000). Downscale before sending; this is
-    # still legible for reading an error dialog.
-    VISION_WIDTH = 768
-    VISION_HEIGHT = 432
+    # Groq's free tier allows 7000 input tokens per minute. A 1920x1080 frame
+    # costs ~7000 on its own and 768x432 still costs ~3184 (measured from the
+    # 429s), so attaching the screen to every turn throttled the whole
+    # conversation. Send a smaller frame, and only when the user is actually
+    # asking about the screen.
+    VISION_WIDTH = 640
+    VISION_HEIGHT = 360
+
+    # Words that suggest the user is referring to what is on screen.
+    VISION_CUES = (
+        "screen", "see", "look", "show", "watch", "view", "display",
+        "error", "issue", "problem", "wrong", "message", "warning",
+        "this", "that", "here", "page", "button", "login", "log in",
+        "blocked", "red", "popup", "dialog", "says",
+    )
+    # Never send two frames closer together than this.
+    VISION_MIN_INTERVAL = 6.0
 
     async def on_user_turn_completed(
         self, turn_ctx: llm.ChatContext, new_message: llm.ChatMessage
@@ -252,11 +268,24 @@ class Assistant(Agent):
         if dropped:
             logger.debug("dropped %d stale screen frame(s) from context", dropped)
 
-        # Attach the current screen only when there is one; sending an image
-        # every turn otherwise would cost tokens for nothing.
         frame = self._latest_frame
         if frame is None:
             return
+
+        # Only spend the image budget when the turn is plausibly about the
+        # screen. Chit-chat ("hi, how are you") does not need a screenshot,
+        # and sending one anyway used up the per-minute allowance so the
+        # turns that *did* need it got rate-limited instead.
+        said = (new_message.text_content or "").lower()
+        relevant = any(cue in said for cue in self.VISION_CUES)
+        since = time.monotonic() - self._last_image_at
+        if not relevant:
+            logger.debug("skipping screen frame; turn not about the screen: %r", said[:60])
+            return
+        if since < self.VISION_MIN_INTERVAL:
+            logger.debug("skipping screen frame; sent one %.1fs ago", since)
+            return
+        self._last_image_at = time.monotonic()
         image = llm.ImageContent(
             image=frame,
             inference_width=self.VISION_WIDTH,
