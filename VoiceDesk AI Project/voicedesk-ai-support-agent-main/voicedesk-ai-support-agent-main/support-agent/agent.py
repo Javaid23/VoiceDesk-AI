@@ -105,10 +105,14 @@ class ResilientAvatarAudioOutput(DataStreamAudioOutput):
     WRITE_TIMEOUT = 5.0
     PLAYOUT_GRACE = 5.0
 
+    # AudioOutput tracks these privately; read them rather than keeping a
+    # parallel count, which drifts when flushes and acks interleave and
+    # caused spurious "playback_finished called more times than captured".
+    _SEGMENTS = "_AudioOutput__playback_segments_count"
+    _FINISHED = "_AudioOutput__playback_finished_count"
+
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self._segments_flushed = 0
-        self._segments_acked = 0
 
     async def capture_frame(self, frame: rtc.AudioFrame) -> None:
         # Same readiness gate as the base class, deliberately unbounded: the
@@ -147,34 +151,27 @@ class ResilientAvatarAudioOutput(DataStreamAudioOutput):
     def flush(self) -> None:
         pushed = self._pushed_duration
         super().flush()
-        self._segments_flushed += 1
-        segment = self._segments_flushed
+        # Nothing was streamed (e.g. the LLM turn failed), so there is no
+        # playback to wait for and nothing to rescue.
+        if pushed <= 0:
+            return
+
+        segment = getattr(self, self._SEGMENTS, 0)
 
         async def _watchdog() -> None:
             await asyncio.sleep(pushed + self.PLAYOUT_GRACE)
-            if self._segments_acked < segment:
+            # Only step in if this segment is still unacknowledged.
+            if getattr(self, self._FINISHED, 0) < segment:
                 logger.warning(
                     "avatar never confirmed playback of segment %d (%.1fs of audio); "
                     "reporting playback finished so the session can continue",
                     segment, pushed,
                 )
-                self._segments_acked = segment
                 self.on_playback_finished(playback_position=pushed, interrupted=False)
 
         task = asyncio.create_task(_watchdog())
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
-
-    def on_playback_finished(self, *, playback_position: float, interrupted: bool,
-                             synchronized_transcript: str | None = None) -> None:
-        # A real ack from the avatar. Never let acked exceed flushed, so a late
-        # ack after the watchdog fired can't mask a stall on a later segment.
-        self._segments_acked = min(self._segments_acked + 1, self._segments_flushed)
-        super().on_playback_finished(
-            playback_position=playback_position,
-            interrupted=interrupted,
-            synchronized_transcript=synchronized_transcript,
-        )
 
 
 class Assistant(Agent):
@@ -348,6 +345,12 @@ async def entrypoint(ctx: agents.JobContext):
         llm=groq.LLM(
             model=os.getenv("GROQ_MODEL", "qwen/qwen3.6-27b"),
             reasoning_effort="none",
+            # Groq's free tier caps *requested* output tokens per minute at
+            # 1000 for this model. The default (2048) is rejected outright:
+            #   429 "Request too large ... OTPM: Limit 1000, Requested 2048"
+            # so every turn burned its retries before answering. Spoken replies
+            # and tool calls need far less than this.
+            max_completion_tokens=int(os.getenv("GROQ_MAX_TOKENS", "250")),
         ),
         tts=deepgram.TTS(
             model=os.getenv("DEEPGRAM_TTS_MODEL", "aura-2-andromeda-en"),
@@ -448,8 +451,14 @@ async def entrypoint(ctx: agents.JobContext):
     )
     await background_audio.start(room=ctx.room, agent_session=session)
 
-    await session.generate_reply(
-        instructions="Greet the user and offer your assistance. You should start by speaking in English."
+    # Speak a fixed greeting rather than generating one. generate_reply() with
+    # only instructions produces a context with no user message, and this
+    # model's chat template rejects that outright:
+    #   400 "minijinja: rendering failed: No user query found in messages"
+    # A fixed line also removes an LLM round-trip from call startup.
+    await session.say(
+        "Hi, I'm your VoiceDesk AI support assistant. How can I help you today?",
+        allow_interruptions=True,
     )
     mark("greeting sent")
 
