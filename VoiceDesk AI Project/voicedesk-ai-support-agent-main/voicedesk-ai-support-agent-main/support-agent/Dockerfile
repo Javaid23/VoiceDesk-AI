@@ -89,4 +89,7 @@ USER appuser
 # Run the application using UV
 # UV will activate the virtual environment and run the agent.
 # The "start" command tells the worker to connect to LiveKit and begin waiting for jobs.
-CMD ["uv", "run", "agent.py", "start"]
+# DEBUG logging surfaces participant join/leave, track subscription, STT
+# transcripts and agent state changes in `lk agent logs` -- needed to
+# diagnose per-call behaviour on Cloud. Drop the flag once stable.
+CMD ["uv", "run", "agent.py", "start", "--log-level", "DEBUG"]
