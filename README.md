@@ -1,351 +1,180 @@
-# 🤖 VoiceDesk AI – Full Stack Voice & Avatar Application
+# VoiceDesk AI
 
-A full-stack AI-powered support platform combining **real-time voice interaction**, **realistic AI avatars**, and **intelligent automation tools** for enterprise customer support.
+VoiceDesk AI is a real-time voice support agent with a talking avatar. A user opens the web app, starts a call, and speaks to an AI support assistant that can see their shared screen, walk them through a problem, unblock their account, and email them a ticket summary when the session ends.
 
-## 🎯 Project Overview
+It was built for the lablab.ai voice AI agent hackathon.
 
-This project demonstrates a complete implementation of a modern support system where an AI agent:
-- **Engages users in natural voice conversations** using OpenAI's Realtime API
-- **Displays a realistic AI avatar** from Beyond Presence
-- **Observes user screens** to provide context-aware support
-- **Automates support tasks** (user unblocking, ticket generation, email notifications)
-- **Provides real-time feedback** with audio and visual cues
+## What it does
 
-Perfect for portfolio demonstration of **full-stack development**, **AI/ML integration**, **real-time communication**, and **modern DevOps practices**.
+- Holds a natural spoken conversation with sub-second response times.
+- Renders a photorealistic avatar that speaks the agent's replies with lip sync.
+- Reads the user's shared screen so it can diagnose what the user is actually looking at.
+- Calls tools to act on the user's behalf: unblocking a locked account and sending a support ticket by email.
+- Keeps replies short and conversational, the way a phone agent would.
 
----
+## How it works
 
-## 📁 Project Structure
+The agent runs as a LiveKit worker. When a user joins a room, the worker connects, starts the avatar, and runs a speech pipeline made of independently chosen providers:
+
+| Stage | Provider | Notes |
+|---|---|---|
+| Speech to text | AssemblyAI | Streaming transcription with end-of-turn detection and a support vocabulary boost |
+| Language model | Groq, Qwen 3.6 27B | Vision-capable, so it can read the shared screen; reasoning is disabled to keep latency low |
+| Text to speech | Deepgram Aura | Low-latency streaming voice |
+| Voice activity | Silero VAD | Runs locally, handles interruptions |
+| Avatar | Beyond Presence | Joins the room as a participant and lip-syncs the agent's audio |
+| Transport | LiveKit | WebRTC rooms, agent dispatch, and hosting |
+
+The frontend is a Next.js application that creates the LiveKit room, publishes the user's microphone and screen, and renders the avatar's video and audio.
+
+### Screen sharing
+
+LiveKit only forwards video to realtime models, so a modular pipeline like this one is blind by default. The agent subscribes to the user's screen-share track itself, keeps the most recent frame, and attaches it to the user's turn when the user is asking about the screen. Frames are downscaled and sent at most once every few seconds to stay inside the language model's free-tier limits.
+
+### Tools
+
+- `unblock_user` clears the demo application's block list and notifies the frontend over RPC so it can show a confirmation.
+- `send_email` sends a ticket summary through Gmail SMTP.
+
+## Repository layout
 
 ```
+frontend/                         Next.js web app
 VoiceDesk AI Project/
-├── README.md (this file)
-├── voicedesk-ai-support-agent-main/
-│   └── support-agent/              # Python backend agent
-│       ├── agent.py                # LiveKit agent entrypoint
-│       ├── prompts.py              # Agent instructions & personalities
-│       ├── tools.py                # Custom tools (unblock_user, send_email)
-│       ├── pyproject.toml          # Python dependencies
-│       ├── .env.local              # Environment variables (secrets)
-│       └── generic_corporate_app/  # Client app (TypeScript)
-│
-└── voicedesk-ai-front-end-main/    # Next.js frontend
-    ├── app-config.ts               # Frontend configuration
-    ├── package.json                # Node dependencies
-    ├── app/                        # Next.js app directory
-    ├── components/                 # React components
-    │   ├── livekit/               # LiveKit UI integration
-    │   └── ui/                    # Radix UI components
-    └── hooks/                      # Custom React hooks
+  voicedesk-ai-support-agent-main/
+    voicedesk-ai-support-agent-main/
+      support-agent/
+        agent.py                  Worker entrypoint and voice pipeline
+        prompts.py                Agent instructions
+        tools.py                  unblock_user and send_email
+        Dockerfile                Image used by LiveKit Cloud
+        livekit.toml              Binds the directory to the deployed agent
+        generic_corporate_app/    Demo app the agent provides support for
 ```
 
----
-
-## ⚙️ Tech Stack
-
-### Backend (Python)
-- **LiveKit Agents** – Real-time communication framework
-- **OpenAI Realtime API** – Voice LLM with natural conversation
-- **Beyond Presence** – AI avatar rendering and animation
-- **Python 3.12+** – Modern async/await support
-- **Gmail SMTP** – Support ticket email automation
-
-### Frontend (TypeScript/React)
-- **Next.js 15** – Full-stack React framework with Turbopack
-- **LiveKit Client SDK** – Room management & participant handling
-- **Radix UI** – Accessible component primitives
-- **Tailwind CSS** – Utility-first styling
-- **TypeScript** – Type-safe development
-
-### DevOps & Tools
-- **pnpm** – Fast Node.js package manager
-- **python-dotenv** – Environment variable management
-- **SMTP with TLS** – Secure email delivery
-
----
-
-## 🚀 Quick Start
+## Running locally
 
 ### Prerequisites
-- Python 3.12+
-- Node.js 18+ (with pnpm)
-- LiveKit server instance (self-hosted or cloud)
-- OpenAI API key
-- Beyond Presence account
-- Gmail account with App Password
 
-### 1️⃣ Backend Setup (Support Agent)
+- Python 3.12 and [uv](https://docs.astral.sh/uv/)
+- Node.js 18 or newer with pnpm 9 (`corepack enable`)
+- Accounts and API keys for LiveKit Cloud, AssemblyAI, Groq, Deepgram, and Beyond Presence
+- A Gmail account with an app password, if you want the email tool to work
+
+Every provider used here has a free tier, and the project runs entirely within them.
+
+### Agent
 
 ```bash
-cd voicedesk-ai-support-agent-main/support-agent
-
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -e .
-
-# Configure environment
-cat > .env.local << EOF
-LIVEKIT_URL=ws://your-livekit-server:7880
-LIVEKIT_API_KEY=your_api_key
-LIVEKIT_API_SECRET=your_api_secret
-OPENAI_API_KEY=sk-your-openai-key
-BEY_AVATAR_ID=your_avatar_id
-GMAIL_USER=your-email@gmail.com
-GMAIL_APP_PASSWORD=your-16-char-app-password
-EOF
-
-# Run the agent
-python agent.py dev
+cd "VoiceDesk AI Project/voicedesk-ai-support-agent-main/voicedesk-ai-support-agent-main/support-agent"
+uv sync
 ```
 
-### 2️⃣ Frontend Setup
+Create `.env.local` in that directory:
+
+```
+LIVEKIT_URL=wss://<project>.livekit.cloud
+LIVEKIT_API_KEY=
+LIVEKIT_API_SECRET=
+
+ASSEMBLYAI_API_KEY=
+GROQ_API_KEY=
+DEEPGRAM_API_KEY=
+DEEPGRAM_TTS_MODEL=aura-2-andromeda-en
+
+BEY_API_KEY=
+BEY_AVATAR_ID=
+
+GMAIL_USER=
+GMAIL_APP_PASSWORD=
+```
+
+Then start the worker:
 
 ```bash
-cd voicedesk-ai-front-end-main
+uv run agent.py dev
+```
 
-# Install dependencies
+`dev` reloads on file changes. Use `uv run agent.py start` for production behaviour.
+
+### Frontend
+
+```bash
+cd frontend
 pnpm install
+```
 
-# Set up local environment
-cat > .env.local << EOF
-NEXT_PUBLIC_LIVEKIT_URL=ws://your-livekit-server:7880
-LIVEKIT_API_KEY=your_api_key
-LIVEKIT_API_SECRET=your_api_secret
-EOF
+Create `frontend/.env.local` with the same three LiveKit values:
 
-# Run development server
+```
+LIVEKIT_URL=wss://<project>.livekit.cloud
+LIVEKIT_API_KEY=
+LIVEKIT_API_SECRET=
+```
+
+Then:
+
+```bash
 pnpm dev
-
-# Open browser
-# Navigate to http://localhost:3000
 ```
 
----
+Open http://localhost:3000 and start a call.
 
-## 🎬 How It Works
+### Demo application
 
-### Agent Workflow
-1. **User initiates call** → Creates LiveKit room
-2. **Agent joins room** → Avatar renders via Beyond Presence
-3. **Natural conversation** → OpenAI Realtime processes audio bi-directionally
-4. **User shares screen** → Agent can see and reference the display
-5. **Agent resolves issue** → Uses tools (unblock, email) as needed
-6. **Confirmation & ticket** → Sends email summary to user
+The agent is written to support a small corporate login app included in the repository. It ships with one blocked user so the support flow can be demonstrated end to end.
 
-### Key Features in Action
-
-**🎤 Voice Interaction**
-- Real-time audio streaming with noise cancellation (BVC algorithm)
-- Natural language understanding with context awareness
-- Audio feedback (typing sounds) during agent thinking
-
-**👁️ Screen Sharing**
-- User shares screen → agent receives video stream
-- Agent can guide user through UI problems
-- Perfect for visual troubleshooting
-
-**🔓 User Management**
-- Unblock users via `unblock_user` tool
-- Modifies `blockusers.txt` in real-time
-- RPC notification system for UI feedback
-
-**📧 Ticket Automation**
-- Generate support ticket summary
-- Send via Gmail SMTP
-- Supports both resolved & unresolved cases
-
-**🎨 Avatar Presence**
-- Live streaming of AI avatar using Beyond Presence SDK
-- Synchronized with voice output for lip-sync
-- Customizable appearance & personality
-
----
-
-## 🛠️ Configuration
-
-### Environment Variables
-
-**Backend (.env.local)**
-```env
-# LiveKit
-LIVEKIT_URL=ws://localhost:7880
-LIVEKIT_API_KEY=devkey
-LIVEKIT_API_SECRET=secret
-
-# OpenAI
-OPENAI_API_KEY=sk-...
-
-# Beyond Presence
-BEY_AVATAR_ID=avatar_1234abcd
-
-# Gmail
-GMAIL_USER=support@company.com
-GMAIL_APP_PASSWORD=xxxx xxxx xxxx xxxx  # 16-character app password
+```bash
+cd "VoiceDesk AI Project/voicedesk-ai-support-agent-main/voicedesk-ai-support-agent-main/support-agent/generic_corporate_app"
+pnpm install
+pnpm dev
 ```
 
-**Frontend (.env.local)**
-```env
-NEXT_PUBLIC_LIVEKIT_URL=ws://localhost:7880
-LIVEKIT_API_KEY=devkey
-LIVEKIT_API_SECRET=secret
+Open http://localhost:8080 and sign in with username `\vienna\maxman123` and password `passw0rd`. The login is rejected because `maxman123` is listed in `public/blockusers.txt`. Share that screen with the agent, describe the problem, and ask it to unblock the account. The agent clears the block list, the login succeeds on the next attempt, and the agent offers to email a ticket.
+
+Note that `unblock_user` edits a file on the machine running the agent. For the unblock to take effect on the demo app, run the agent on the same machine as the app.
+
+## Deployment
+
+The agent is hosted on LiveKit Cloud and the frontend on Vercel. Both run on free tiers.
+
+### Agent on LiveKit Cloud
+
+Install the [LiveKit CLI](https://docs.livekit.io/home/cli/), then from the `support-agent` directory:
+
+```bash
+lk agent deploy --secrets-file <path-to-secrets> --yes .
 ```
 
-### App Configuration (Frontend)
+The secrets file holds the provider keys from `.env.local` except the three `LIVEKIT_*` values, which LiveKit Cloud injects itself. Set `LIVEKIT_USE_ASSIGNED_URL=1` in the secrets so the agent uses the regional URL it is assigned rather than the project URL.
 
-Edit `app-config.ts` to customize:
-- Company name & branding
-- Page title & description
-- Feature toggles (chat, video, screen share)
-- UI colors (light/dark themes)
+The `Dockerfile` pins Python 3.12 to match `uv.lock` and pre-downloads the Silero model at build time so it is not fetched on the first call.
 
----
+### Frontend on Vercel
 
-## 📚 File Guides
+Import the repository, set the root directory to `frontend`, and add the three `LIVEKIT_*` environment variables. The build uses the committed `pnpm-lock.yaml`.
 
-### Backend Files
+## Configuration
 
-| File | Purpose |
-|------|---------|
-| `agent.py` | Main agent entrypoint; initializes LiveKit session, avatar, and background audio |
-| `prompts.py` | System instructions & agent personality; ticket generation examples |
-| `tools.py` | Tool definitions (`unblock_user`, `send_email`); RPC client integration |
-| `pyproject.toml` | Python dependencies & project metadata |
+Optional environment variables for the agent:
 
-### Frontend Files
+| Variable | Default | Purpose |
+|---|---|---|
+| `GROQ_MODEL` | `qwen/qwen3.6-27b` | Language model. Must support images for screen sharing to work. |
+| `GROQ_MAX_TOKENS` | `250` | Output cap per reply. Kept low to stay within Groq's free-tier output limit. |
+| `DEEPGRAM_TTS_MODEL` | `aura-2-andromeda-en` | Voice used for replies. |
+| `BLOCKUSERS_FILE` | bundled demo app path | Location of the block list `unblock_user` edits. |
+| `LIVEKIT_USE_ASSIGNED_URL` | unset | Set to `1` in cloud deployments. |
+| `LIVEKIT_FORCE_RELAY` | unset | Set to `1` to force TURN relay on networks that block direct WebRTC. |
 
-| File | Purpose |
-|------|---------|
-| `app-config.ts` | Centralized app configuration & feature flags |
-| `app/layout.tsx` | Root layout with theme provider |
-| `components/session-view.tsx` | Main room participant display |
-| `components/livekit/agent-*.tsx` | Agent-specific controls & status displays |
-| `components/chat-*.tsx` | Chat UI components |
-| `hooks/useChatAndTranscription.ts` | Custom hook for message handling |
+Agent behaviour and tone are defined in `prompts.py`. Tools are defined in `tools.py` using LiveKit's `@function_tool` decorator.
 
----
+## Limitations
 
-## 🔐 Security Considerations
+- Groq's free tier allows roughly 7,000 input tokens per minute. A screen frame costs a large share of that, so the agent only sends the screen when the user refers to it and no more than once every few seconds. A rapid series of screen questions may be briefly rate limited.
+- The Beyond Presence avatar leaves and rejoins the room shortly after connecting. The agent waits for it to settle before speaking, which adds a few seconds to the start of each call.
+- `unblock_user` writes to a local file, so it only affects the demo app when the agent and the app run on the same machine.
 
-⚠️ **Production Deployment Checklist**
-- [ ] Use environment variable vaults (AWS Secrets Manager, HashiCorp Vault)
-- [ ] Never commit `.env.local` or API keys to Git
-- [ ] Enable TLS/HTTPS for all traffic
-- [ ] Implement rate limiting on RPC endpoints
-- [ ] Validate email inputs and sanitize ticket content
-- [ ] Use Gmail App Passwords (not main account password)
-- [ ] Add authentication to LiveKit rooms (JWT tokens)
-- [ ] Monitor agent logs for abuse/errors
-- [ ] Set up error tracking (Sentry, DataDog)
+## Author
 
----
-
-## 📝 Customization Guide
-
-### Change Agent Personality
-Edit `prompts.py` → `AGENT_INSTRUCTIONS` string:
-```python
-AGENT_INSTRUCTIONS = """
-You are now a billing support specialist...
-"""
-```
-
-### Add New Tools
-In `tools.py`, use the `@function_tool()` decorator:
-```python
-@function_tool()
-async def my_custom_tool(context: RunContext, param: str) -> str:
-    """Tool description"""
-    return "Tool result"
-```
-
-### Modify Frontend Theme
-Edit `app-config.ts`:
-```typescript
-accent: '#FF6B6B',
-accentDark: '#FF8E8E',
-```
-
-### Change Avatar
-In `agent.py`:
-```python
-avatar_id=os.getenv("BEY_AVATAR_ID")  # Update this ID
-```
-
----
-
-## 🧪 Testing
-
-### Manual Testing Workflow
-1. Start backend: `python agent.py dev`
-2. Start frontend: `pnpm dev`
-3. Open http://localhost:3000
-4. Click "Start Call"
-5. Share screen (optional)
-6. Test: "Unblock my account" or "Send me a ticket"
-
-### Debugging
-- **Backend logs**: Check console output from `agent.py`
-- **Frontend logs**: Browser DevTools Console
-- **Email logs**: Check Gmail "Sent" folder
-- **RPC debugging**: Add `logging.info()` statements in `tools.py`
-
----
-
-## 🤝 Contributing
-
-This is a personal portfolio project. For improvements:
-1. Fork the repository
-2. Create a feature branch
-3. Commit improvements
-4. Submit a pull request
-
----
-
-## 📜 License
-
-**Proprietary License** (See `LICENSE` file)
-
-- Source code authored by **Thanh-Y Nguyen** © 2025
-- Licensed for **private/educational use only**
-- Commercial use, redistribution, or publication requires written permission
-
-**Third-Party Components:**
-- LiveKit SDK — Apache 2.0 / MIT
-- OpenAI SDK — MIT
-- Next.js & React — MIT
-- Radix UI — MIT
-- See individual packages for full license details
-
----
-
-## 📞 Support & Contact
-
-For questions about this project:
-- Check the individual README files in each subdirectory
-- Review code comments and docstrings
-- Refer to LiveKit & OpenAI official documentation
-
----
-
-## 🎓 Portfolio Highlights
-
-**This project demonstrates:**
-- ✅ Full-stack development (Python + TypeScript/React)
-- ✅ Real-time communication & streaming (WebSocket, WebRTC)
-- ✅ AI/LLM integration (OpenAI Realtime API)
-- ✅ Async/await patterns & concurrent programming
-- ✅ Email automation & SMTP protocols
-- ✅ Modern DevOps (environment management, virtual envs)
-- ✅ UI/UX (Radix components, Tailwind, responsive design)
-- ✅ Error handling & logging best practices
-- ✅ API design (tools, RPC, function definitions)
-- ✅ Third-party SDK integration (LiveKit, Beyond Presence, OpenAI)
-
----
-
-**Last Updated:** May 2026  
-**Status:** Active Development  
-**Version:** 1.0.0
+Muhammad Javaid Butt
